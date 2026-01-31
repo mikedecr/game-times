@@ -1,0 +1,12 @@
+[project]
+authors = ["mikedecr <mgdecrescenzo@gmail.com>"]
+channels = ["conda-forge"]
+description = "Add a short description here"
+name = "linkedin-games"
+platforms = ["osx-arm64"]
+version = "0.1.0"
+
+[tasks]
+
+[dependencies]
+python = "3.12.*"
