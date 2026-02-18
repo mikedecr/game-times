@@ -1,0 +1,278 @@
+---
+title: "Scratch"
+format: html
+---
+
+```{python}
+import polars as pl
+from polars import col, selectors as cs, lit
+```
+
+```{python}
+from lets_plot import *
+from lets_plot.plot.core import PlotSpec
+LetsPlot.setup_show_ext()
+LetsPlot.set_theme(theme_gray())
+
+
+def qplot(df: pl.DataFrame, *args) -> PlotSpec:
+    plot = sum(args, start=ggplot(df))
+    plot.show()
+    return plot
+```
+
+```{python}
+df = pl.read_csv("build/sheet/rough.csv")
+df = df.filter(pl.col("game").is_not_null())
+```
+
+```{python}
+def pad_hour(raw: str) -> str:
+    splits = raw.split(":")
+    if len(splits) == 1:
+        h = "00"
+        m = "00"
+        s = splits[0]
+    elif len(splits) == 2:
+        h = "00"
+        m = splits[0]
+        s = splits[1]
+    if len(h) == 0:
+        s = m
+        m = h
+        h = "00"
+    for u in (h, m, s):
+        if len(u) == 1:
+            u = "0" + u
+        assert len(u) == 2
+    return ":".join((h, m, s))
+```
+
+```{python}
+ISO_weekday_order = [
+    "Monday",
+    "Tuesday",
+    "Wednesday",
+    "Thursday",
+    "Friday",
+    "Saturday",
+    "Sunday"
+]
+
+
+df = df.with_columns(
+    game_time = col("game_time").map_elements(pad_hour, str).str.to_time(),
+    avg_time = col("avg_time").map_elements(pad_hour, str).str.to_time(),
+    datetime = col("datetime").str.to_datetime(),
+).with_columns(
+    ratio = col("game_time").cast(int) / col("avg_time").cast(int),
+    date = col("datetime").dt.date(),
+    time = col("datetime").dt.time(),
+).with_columns(
+    weekday = col("date").dt.weekday()
+).with_columns(
+    weekday_name = col("weekday").map_elements(lambda n: ISO_weekday_order[n-1])
+)
+```
+
+```{python}
+tango = df.filter(pl.col("game") == "Tango")
+
+queens = (
+    df
+    .filter(pl.col("game") == "Queens")
+    .filter(pl.col("game_number") > 200)
+)
+```
+
+```{python}
+accents = {
+    "Tango": "navy",
+    "Queens": "purple",
+}
+default = "goldenrod"
+solo = "orangered"
+```
+
+```{python}
+def ts_plot(data: pl.DataFrame, *args) -> PlotSpec:
+    name = data["game"].unique()[0]
+    return qplot(
+        data,
+        aes(x = "date"),
+        geom_line(aes(y = "game_time"), color = accents[name]),
+        geom_line(aes(y = "avg_time"), color = default),
+        ggtitle(name),
+        *args
+    )
+```
+
+```{python}
+ts_plot(tango)
+```
+
+```{python}
+ts_plot(queens)
+```
+
+```{python}
+def scatterplot(data: pl.DataFrame, *args) -> PlotSpec:
+    name = data["game"].unique()[0]
+    return qplot(
+        data,
+        aes(x = "avg_time", y = "game_time"),
+        geom_point(shape=1),
+        geom_abline(intercept = 0, slope = 1),
+        ggtitle(name),
+        *args
+    )
+```
+
+```{python}
+scatterplot(tango)
+```
+
+```{python}
+scatterplot(queens)
+```
+
+```{python}
+def ratio_plot(data: pl.DataFrame, *args) -> PlotSpec:
+    name = data["game"].unique()[0]
+    return qplot(
+        data,
+        aes(x = "date"),
+        geom_point(aes(y = "ratio")),
+        ggtitle(name),
+        *args
+    )
+```
+
+```{python}
+ratio_plot(tango, scale_y_log10(), geom_hline(yintercept = 1, color = "gray"))
+```
+
+```{python}
+ratio_plot(queens, scale_y_log10(), geom_hline(yintercept = 1, color = "gray"))
+```
+
+
+```{python}
+def ratio_vs_avg_plot(data: pl.DataFrame, *args) -> PlotSpec:
+    name = data["game"].unique()[0]
+    return qplot(
+        data,
+        aes(x = "avg_time", y = "ratio"),
+        geom_point(shape=1),
+        ggtitle(name),
+        *args
+    )
+```
+
+```{python}
+ratio_vs_avg_plot(tango)
+```
+
+```{python}
+ratio_vs_avg_plot(queens)
+```
+
+```{python}
+weekdays = (
+    df
+    .with_columns(
+        avg_time = col("avg_time").cast(int) // int(1e9), # nanosecond conversion
+        game_time = col("game_time").cast(int) // int(1e9),
+    )
+    .group_by("weekday", "game").agg(
+        count = pl.col("game").count(),
+        avg_time_mean = pl.col("avg_time").mean(),
+        game_time_mean = pl.col("game_time").mean(),
+        avg_time_std = pl.col("avg_time").std(),
+        game_time_std = pl.col("game_time").std(),
+        avg_time_median = pl.col("avg_time").median(),
+        game_time_median = pl.col("game_time").median(),
+    ).with_columns(
+        avg_time_stderr = col("avg_time_std") / col("count").pow(0.5),
+        game_time_stderr = col("game_time_std") / col("count").pow(0.5),
+    ).with_columns(
+        avg_time_lower = col("avg_time_mean") - col("avg_time_stderr"),
+        avg_time_upper = col("avg_time_mean") + col("avg_time_stderr"),
+        game_time_lower = col("game_time_mean") - col("game_time_stderr"),
+        game_time_upper = col("game_time_mean") + col("game_time_stderr"),
+    )
+)
+```
+
+```{python}
+long_weekdays = weekdays.unpivot(
+    cs.contains("mean", "lower", "upper"),
+    index=["weekday", "game"]
+).with_columns(
+    time = pl.when(col("variable").str.contains("avg")).then(lit("avg_time")).otherwise(lit("game_time")),
+    stat = col("variable").str.split("_").list.last()
+).pivot(
+    on="stat",
+    values="value",
+    index=["weekday", "game", "time"]
+)
+```
+
+```{python tags=c("hide_input")}
+qplot(
+    long_weekdays,
+    aes(x = "weekday", color = "time", fill = "time"),
+    facet_wrap("game", nrow = 1),
+    geom_pointrange(
+        aes(y = "mean", ymin = "lower", ymax = "upper"),
+        position = position_dodge(width = 0.25),
+    ),
+    scale_x_discrete(breaks=list(range(1,8)), labels = ISO_weekday_order),
+    scale_color_manual(
+        values = {"avg_time": "gray", "game_time": solo}
+    ),
+    scale_fill_manual(
+        values = {"avg_time": "gray", "game_time": solo}
+    ),
+    labs(x = "")
+)
+```
+
+```{python}
+qplot(
+    weekdays,
+    aes(x = "weekday", color = "game", fill = "game"),
+    facet_wrap("game", nrow = 1),
+    geom_ribbon(
+        aes(ymin = "avg_time_lower", ymax = "avg_time_upper"),
+        color = "",
+        alpha = 0.2
+    ),
+    geom_line(aes(y = "avg_time_mean")),
+    geom_pointrange(
+        aes(y = "game_time_mean",
+            ymin = "game_time_lower",
+            ymax = "game_time_upper"),
+    ),
+    scale_x_discrete(breaks=list(range(1,8)), labels = ISO_weekday_order),
+    scale_color_manual(
+        values = {"Tango": accents["Tango"], "Queens": accents["Queens"]}
+    ),
+    scale_fill_manual(
+        values = {"Tango": accents["Tango"], "Queens": accents["Queens"]}
+    ),
+)
+```
+
+
+## Time degradation of the average
+
+```{python}
+qplot(
+    df,
+    aes(x = "time", y = "avg_time"),
+    facet_grid(x="game", y="weekday"),
+    geom_point(),
+    scale_y_log10()
+)
+```
