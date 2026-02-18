@@ -2,3 +2,8 @@
 # pixi environments
 .pixi
 *.egg-info
+.DS_Store
+data
+src/py/ocr/__pycache__
+src/linkedin_game_data/__pycache__
+src/linkedin_game_data/scripts/__pycache__

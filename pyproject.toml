@@ -1,0 +1,21 @@
+[project]
+name = "linkedin_game_data"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "defusedxml>=0.7.1",
+    "ipython>=9.10.0",
+    "lets-plot>=4.8.2",
+    "ollama>=0.6.1",
+    "polars>=1.38.1",
+    "tqdm>=4.67.3",
+    "typer>=0.24.0",
+]
+
+[tool.uv]
+package = true
+
+[project.scripts]
+ocr = "linkedin_game_data.scripts.ocr:app"
