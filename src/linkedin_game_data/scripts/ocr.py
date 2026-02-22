@@ -29,7 +29,12 @@ def ocr(
     ] = False,
 ):
     """help text"""
-    files = Path(path).iterdir()
+    if Path(path).is_dir():
+        files = Path(path).iterdir()
+    elif Path(path).is_file():
+        files = [Path(path)]
+    else:
+        raise ValueError(f"Invalid path: {path}")
     for file in tqdm(sorted(list(files))):
         if not file.suffix.lower() == ".png":
             print(f"Skipping {file}, unrecognized file type")
