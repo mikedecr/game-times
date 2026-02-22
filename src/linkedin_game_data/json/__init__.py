@@ -1,3 +1,4 @@
+from . import overrides
 from .game_result import GameResult
 from .parser import parse_game_result
 

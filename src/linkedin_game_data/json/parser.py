@@ -9,7 +9,9 @@ from .game_result import GameResult
 logger = logging.getLogger(__name__)
 
 GAME_ROUND_PATTERN = re.compile(r"([A-Za-z]+(?:\s+\w+)?)\s*#(\d+)")
-AVG_TIME_PATTERN = re.compile(r"avg\.?\s*:?\s*(\d+:\d{2})")
+AVG_TIME_PATTERN = re.compile(
+    r"(?:(?:Today['\u2019]s?|Todays?)(?![A-Za-z'])\s+\w*\.?\s*|\bav\w*\.?)\s*:?\s*(\d+[:.]\d{2})"
+)
 TIME_PATTERN = re.compile(r"^(\d{1,2}:\d{2})$")
 
 MAX_FUZZY_DIST = 1
@@ -64,24 +66,58 @@ def parse_game_result(lines: list[str]) -> GameResult:
     else:
         logger.warning("No average time found (this may be normal for some screens)")
 
-    standalone_times = []
+    solve_line_idx = -1
+    best_line_idx = -1
     for i, line in enumerate(lines):
-        if i == avg_time_line_idx:
-            continue
-        line_clean = line.strip()
-        if TIME_PATTERN.match(line_clean):
-            standalone_times.append((i, line_clean))
+        if find_near_matches("Solve", line, max_l_dist=MAX_FUZZY_DIST):
+            solve_line_idx = i
+        if find_near_matches("Best", line, max_l_dist=MAX_FUZZY_DIST):
+            best_line_idx = i
 
-    if not standalone_times:
+    play_time: str | None = None
+
+    # Priority 1: anchor to avg_time if present (Android Screenshots show clock before avg)
+    if avg_time_line_idx > 0:
+        for i, line in enumerate(lines):
+            if i >= avg_time_line_idx:
+                break
+            line_clean = line.strip()
+            if TIME_PATTERN.match(line_clean):
+                play_time = line_clean
+    # Priority 2: anchor to "Solve time" if present but no avg_time (iPhone results screens)
+    elif solve_line_idx > 0:
+        for i, line in enumerate(lines):
+            if i >= solve_line_idx:
+                break
+            line_clean = line.strip()
+            if TIME_PATTERN.match(line_clean):
+                play_time = line_clean
+    # Priority 3: check for time before "Best score" - warn if ambiguous (no anchor)
+    elif best_line_idx > 0:
+        has_time_before_best = any(
+            TIME_PATTERN.match(lines[i].strip())
+            for i in range(best_line_idx)
+        )
+        if has_time_before_best:
+            logger.warning(
+                f"Found time before 'Best' but no avg_time or 'Solve' line to anchor to"
+            )
+        else:
+            for i, line in enumerate(lines):
+                line_clean = line.strip()
+                if TIME_PATTERN.match(line_clean):
+                    play_time = line_clean
+    # Fallback: just take the last time found
+    else:
+        for i, line in enumerate(lines):
+            line_clean = line.strip()
+            if TIME_PATTERN.match(line_clean):
+                play_time = line_clean
+
+    if play_time is None:
         logger.warning("No play time found")
+        result.play_time = None
         return result
 
-    if len(standalone_times) > 1:
-        logger.warning(
-            f"Multiple potential play times found: {[t[1] for t in standalone_times]}"
-        )
-
-    if standalone_times:
-        result.play_time = standalone_times[0][1]
-
+    result.play_time = play_time
     return result
