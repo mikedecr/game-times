@@ -20,4 +20,4 @@ dependencies = [
 package = true
 
 [project.scripts]
-ocr = "linkedin_game_data.scripts.ocr:app"
+lig = "linkedin_game_data.scripts.ocr:app"

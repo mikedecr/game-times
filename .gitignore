@@ -7,3 +7,6 @@ data
 src/py/ocr/__pycache__
 src/linkedin_game_data/__pycache__
 src/linkedin_game_data/scripts/__pycache__
+src/linkedin_game_data/response_normalization/__pycache__
+src/linkedin_game_data/response_normalization/name/__pycache__
+src/linkedin_game_data/json/__pycache__

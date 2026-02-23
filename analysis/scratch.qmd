@@ -4,6 +4,9 @@ format: html
 ---
 
 ```{python}
+import datetime
+from pathlib import Path
+
 import polars as pl
 from polars import col, selectors as cs, lit
 ```
@@ -21,32 +24,101 @@ def qplot(df: pl.DataFrame, *args) -> PlotSpec:
     return plot
 ```
 
+
+## Prep data
+
 ```{python}
-df = pl.read_csv("build/sheet/rough.csv")
-df = df.filter(pl.col("game").is_not_null())
+df = pl.read_csv("build/table/game_results.csv")
+```
+
+### Game Name Overrides
+
+We have a dictionary of game names that we hard-code some overrides for.
+
+```{python}
+from linkedin_game_data.json.overrides import game_name_overrides, avg_time_overrides, play_time_overrides
+
+game_name_string_overrides = {k: v.value for k, v in game_name_overrides.items()}
+```
+
+We can use the key of the dictionary to replace the null value.
+
+```{python}
+df = df.with_columns(
+    img_name = col("source_file").str.split("/").list.get(-2),
+).with_columns(
+    game = pl.when(col("img_name").is_in(game_name_string_overrides))
+        .then(col("img_name").replace(game_name_string_overrides))
+        .otherwise(col("game")),
+    avg_time = pl.when(col("img_name").is_in(avg_time_overrides))
+        .then(col("avg_time").replace(avg_time_overrides))
+        .otherwise(col("avg_time")),
+    play_time = pl.when(col("img_name").is_in(play_time_overrides))
+        .then(col("play_time").replace(play_time_overrides))
+        .otherwise(col("play_time")),
+)
+
+# :)
+assert not df["game"].is_null().any()
+```
+
+
+### EXIF Timestamp
+
+```{python}
+exif = pl.read_csv("build/exif/exif.csv")
 ```
 
 ```{python}
-def pad_hour(raw: str) -> str:
-    splits = raw.split(":")
-    if len(splits) == 1:
-        h = "00"
-        m = "00"
-        s = splits[0]
-    elif len(splits) == 2:
-        h = "00"
-        m = splits[0]
-        s = splits[1]
-    if len(h) == 0:
-        s = m
-        m = h
-        h = "00"
-    for u in (h, m, s):
-        if len(u) == 1:
-            u = "0" + u
-        assert len(u) == 2
-    return ":".join((h, m, s))
+exif = exif.with_columns(
+    img_name = col("SourceFile").map_elements(
+        lambda s: Path(s).stem,
+        return_dtype=str,
+    )
+)
 ```
+
+
+```{python}
+df = df.join(
+    exif.select("img_name", datetime="EXIF:DateTimeOriginal"),
+    on="img_name", how="left"
+)
+```
+
+
+### String to timetstamps
+
+```{python}
+df.select("play_time", "avg_time", "datetime")
+```
+
+
+```{python}
+def convert_time(time_string_col: pl.Expr) -> pl.Expr:
+    return (
+        time_string_col
+        .str.replace("[.]", ":")
+        .str.pad_start(7, "0")
+        .str.to_time(format="%H%M:%S")
+        - datetime.time(0, 0, 0)
+    )
+
+
+df = df.with_columns(
+    datetime = col("datetime").str.to_datetime(format="%Y:%m:%d %H:%M:%S", time_zone="US/Central"),
+    play_time = convert_time(col("play_time")).cast(int) // int(1e9),
+    avg_time = convert_time(col("avg_time")).cast(int) // int(1e9),
+).with_columns(
+    date = col("datetime").dt.convert_time_zone("US/Pacific").dt.date(),
+    time = col("datetime").dt.time(),
+)
+```
+
+
+### Weekday
+
+We can use the `datetime` column to get the weekday.
 
 ```{python}
 ISO_weekday_order = [
@@ -59,19 +131,21 @@ ISO_weekday_order = [
     "Sunday"
 ]
 
+idx_day_dict = dict(zip(range(1, len(ISO_weekday_order) + 1), ISO_weekday_order))
 
 df = df.with_columns(
-    game_time = col("game_time").map_elements(pad_hour, str).str.to_time(),
-    avg_time = col("avg_time").map_elements(pad_hour, str).str.to_time(),
-    datetime = col("datetime").str.to_datetime(),
-).with_columns(
-    ratio = col("game_time").cast(int) / col("avg_time").cast(int),
-    date = col("datetime").dt.date(),
-    time = col("datetime").dt.time(),
-).with_columns(
-    weekday = col("date").dt.weekday()
-).with_columns(
-    weekday_name = col("weekday").map_elements(lambda n: ISO_weekday_order[n-1])
+    weekday = col("datetime").dt.weekday().replace_strict(idx_day_dict)
+)
+```
+
+
+### Other functions of basics
+
+```{python}
+df = df.with_columns(
+    relative_round = col("round") - col("round").min().over("game"),
+    time_ratio = col("play_time").cast(int) / col("avg_time").cast(int),
+    android = col("img_name").str.contains("Screenshot"),
 )
 ```
 
@@ -81,9 +155,79 @@ tango = df.filter(pl.col("game") == "Tango")
 queens = (
     df
     .filter(pl.col("game") == "Queens")
-    .filter(pl.col("game_number") > 200)
+    # .filter(pl.col("relative_round") > 200)
 )
 ```
+
+
+## Data QC
+
+How many nulls?
+
+```{python}
+for colname in df.columns:
+    counts = df.select(pl.col(colname).is_null().sum())
+    print(counts)
+```
+
+
+Linearity of date and game number
+
+```{python}
+qplot(
+    df,
+    aes(x = "date", y = "relative_round", color = "game"),
+    geom_point()
+)
+```
+
+
+When did the averages begin appearing unconditionally?
+
+```{python}
+df.filter(col("play_time").gt(col("avg_time"))).group_by("game").agg(col("date").min())
+```
+
+```{python}
+qplot(
+    df
+    .with_columns(
+        valid_avg_time = col("avg_time").is_not_null(),
+        beat_avg = pl.when(col("avg_time").is_null())
+            .then(lit("unknown"))
+            .otherwise(col("play_time").lt(col("avg_time"))),
+    )
+    ,
+    aes(x = "relative_round", y = "valid_avg_time", color = "beat_avg"),
+    facet_grid(x = "game", y = "beat_avg"),
+    geom_point()
+)
+```
+
+
+```{python}
+qplot(
+    df.with_columns(valid_avg_time = col("avg_time").is_not_null()),
+    aes(x = "relative_round", y = "valid_avg_time", color = "game"),
+    facet_wrap("game"),
+    geom_point()
+)
+```
+
+
+```{python}
+dupe_dates = (
+    df
+    .group_by("date", "game")
+    .len()
+    .filter(col("len").gt(1))
+    .filter(col("date").is_not_null())
+)
+
+assert dupe_dates.is_empty()
+```
+
+## Initial plots
 
 ```{python}
 accents = {
@@ -99,20 +243,20 @@ def ts_plot(data: pl.DataFrame, *args) -> PlotSpec:
     name = data["game"].unique()[0]
     return qplot(
         data,
-        aes(x = "date"),
-        geom_line(aes(y = "game_time"), color = accents[name]),
-        geom_line(aes(y = "avg_time"), color = default),
+        aes(x = "datetime"),
+        geom_point(aes(y = "play_time"), color = accents[name]),
+        geom_point(aes(y = "avg_time"), color = default),
         ggtitle(name),
         *args
     )
 ```
 
 ```{python}
-ts_plot(tango)
+ts_plot(tango, facet_wrap("android"))
 ```
 
 ```{python}
-ts_plot(queens)
+ts_plot(queens, facet_wrap("android"))
 ```
 
 ```{python}
@@ -120,7 +264,7 @@ def scatterplot(data: pl.DataFrame, *args) -> PlotSpec:
     name = data["game"].unique()[0]
     return qplot(
         data,
-        aes(x = "avg_time", y = "game_time"),
+        aes(x = "avg_time", y = "play_time"),
         geom_point(shape=1),
         geom_abline(intercept = 0, slope = 1),
         ggtitle(name),
@@ -182,24 +326,24 @@ weekdays = (
     df
     .with_columns(
         avg_time = col("avg_time").cast(int) // int(1e9), # nanosecond conversion
-        game_time = col("game_time").cast(int) // int(1e9),
+        play_time = col("play_time").cast(int) // int(1e9),
     )
     .group_by("weekday", "game").agg(
         count = pl.col("game").count(),
         avg_time_mean = pl.col("avg_time").mean(),
-        game_time_mean = pl.col("game_time").mean(),
+        play_time_mean = pl.col("play_time").mean(),
         avg_time_std = pl.col("avg_time").std(),
-        game_time_std = pl.col("game_time").std(),
+        play_time_std = pl.col("play_time").std(),
         avg_time_median = pl.col("avg_time").median(),
-        game_time_median = pl.col("game_time").median(),
+        play_time_median = pl.col("play_time").median(),
     ).with_columns(
         avg_time_stderr = col("avg_time_std") / col("count").pow(0.5),
-        game_time_stderr = col("game_time_std") / col("count").pow(0.5),
+        play_time_stderr = col("play_time_std") / col("count").pow(0.5),
     ).with_columns(
         avg_time_lower = col("avg_time_mean") - col("avg_time_stderr"),
         avg_time_upper = col("avg_time_mean") + col("avg_time_stderr"),
-        game_time_lower = col("game_time_mean") - col("game_time_stderr"),
-        game_time_upper = col("game_time_mean") + col("game_time_stderr"),
+        play_time_lower = col("play_time_mean") - col("play_time_stderr"),
+        play_time_upper = col("play_time_mean") + col("play_time_stderr"),
     )
 )
 ```
@@ -209,7 +353,7 @@ long_weekdays = weekdays.unpivot(
     cs.contains("mean", "lower", "upper"),
     index=["weekday", "game"]
 ).with_columns(
-    time = pl.when(col("variable").str.contains("avg")).then(lit("avg_time")).otherwise(lit("game_time")),
+    time = pl.when(col("variable").str.contains("avg")).then(lit("avg_time")).otherwise(lit("play_time")),
     stat = col("variable").str.split("_").list.last()
 ).pivot(
     on="stat",
@@ -229,10 +373,10 @@ qplot(
     ),
     scale_x_discrete(breaks=list(range(1,8)), labels = ISO_weekday_order),
     scale_color_manual(
-        values = {"avg_time": "gray", "game_time": solo}
+        values = {"avg_time": "gray", "play_time": solo}
     ),
     scale_fill_manual(
-        values = {"avg_time": "gray", "game_time": solo}
+        values = {"avg_time": "gray", "play_time": solo}
     ),
     labs(x = "")
 )
@@ -250,9 +394,9 @@ qplot(
     ),
     geom_line(aes(y = "avg_time_mean")),
     geom_pointrange(
-        aes(y = "game_time_mean",
-            ymin = "game_time_lower",
-            ymax = "game_time_upper"),
+        aes(y = "play_time_mean",
+            ymin = "play_time_lower",
+            ymax = "play_time_upper"),
     ),
     scale_x_discrete(breaks=list(range(1,8)), labels = ISO_weekday_order),
     scale_color_manual(
