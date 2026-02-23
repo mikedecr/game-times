@@ -149,13 +149,21 @@ df = df.with_columns(
 )
 ```
 
+When did the averages begin appearing unconditionally?
+
+```{python}
+regime_date = df.filter(col("play_time").gt(col("avg_time"))).get_column("date").min()
+df = df.with_columns(
+    censorship_regime = col("date").lt(regime_date)
+)
+```
+
 ```{python}
 tango = df.filter(pl.col("game") == "Tango")
 
 queens = (
     df
     .filter(pl.col("game") == "Queens")
-    # .filter(pl.col("relative_round") > 200)
 )
 ```
 
@@ -182,11 +190,6 @@ qplot(
 ```
 
 
-When did the averages begin appearing unconditionally?
-
-```{python}
-df.filter(col("play_time").gt(col("avg_time"))).group_by("game").agg(col("date").min())
-```
 
 ```{python}
 qplot(
@@ -243,10 +246,11 @@ def ts_plot(data: pl.DataFrame, *args) -> PlotSpec:
     name = data["game"].unique()[0]
     return qplot(
         data,
-        aes(x = "datetime"),
+        aes(x = "date"),
         geom_point(aes(y = "play_time"), color = accents[name]),
         geom_point(aes(y = "avg_time"), color = default),
         ggtitle(name),
+        geom_vline(xintercept = regime_date, color = "gray"),
         *args
     )
 ```
@@ -274,10 +278,26 @@ def scatterplot(data: pl.DataFrame, *args) -> PlotSpec:
 
 ```{python}
 scatterplot(tango)
+scatterplot(
+    tango,
+    coord_fixed(xlim=(0, 400), ylim=(0, 400)),
+    # scale_y_log10(),
+    # scale_x_log10(),
+    geom_line(aes(x = "avg_time", y = "avg_time"), color = "gray"),
+    geom_smooth()
+)
 ```
 
 ```{python}
 scatterplot(queens)
+```
+
+```{python}
+max_avg = queens.get_column("avg_time").max())
+scatterplot(
+    queens,
+    coord_fixed(xlim=(0, max_avg), ylim=(0, max_avg)),
+)
 ```
 
 ```{python}
@@ -286,14 +306,19 @@ def ratio_plot(data: pl.DataFrame, *args) -> PlotSpec:
     return qplot(
         data,
         aes(x = "date"),
-        geom_point(aes(y = "ratio")),
+        geom_hline(yintercept = 1, color = "gray"),
+        geom_point(aes(y = "time_ratio")),
         ggtitle(name),
+        geom_vline(xintercept = regime_date, color = "maroon"),
         *args
     )
 ```
 
 ```{python}
-ratio_plot(tango, scale_y_log10(), geom_hline(yintercept = 1, color = "gray"))
+ratio_plot(
+    tango,
+    geom_smooth()
+)
 ```
 
 ```{python}
@@ -306,7 +331,7 @@ def ratio_vs_avg_plot(data: pl.DataFrame, *args) -> PlotSpec:
     name = data["game"].unique()[0]
     return qplot(
         data,
-        aes(x = "avg_time", y = "ratio"),
+        aes(x = "avg_time", y = "time_ratio"),
         geom_point(shape=1),
         ggtitle(name),
         *args
@@ -314,20 +339,19 @@ def ratio_vs_avg_plot(data: pl.DataFrame, *args) -> PlotSpec:
 ```
 
 ```{python}
-ratio_vs_avg_plot(tango)
+ratio_vs_avg_plot(tango, scale_x_log10(), scale_y_log10())
 ```
 
 ```{python}
-ratio_vs_avg_plot(queens)
+ratio_vs_avg_plot(queens, scale_y_log10())
 ```
+
+
+## Weekly seasonality
 
 ```{python}
 weekdays = (
     df
-    .with_columns(
-        avg_time = col("avg_time").cast(int) // int(1e9), # nanosecond conversion
-        play_time = col("play_time").cast(int) // int(1e9),
-    )
     .group_by("weekday", "game").agg(
         count = pl.col("game").count(),
         avg_time_mean = pl.col("avg_time").mean(),
@@ -382,32 +406,19 @@ qplot(
 )
 ```
 
+
 ```{python}
 qplot(
-    weekdays,
-    aes(x = "weekday", color = "game", fill = "game"),
-    facet_wrap("game", nrow = 1),
-    geom_ribbon(
-        aes(ymin = "avg_time_lower", ymax = "avg_time_upper"),
-        color = "",
-        alpha = 0.2
+    df
+    .filter(col("weekday").is_not_null())
+    .with_columns(
+        dayname = col("weekday").replace_strict(range(1, 8), ISO_weekday_order)
     ),
-    geom_line(aes(y = "avg_time_mean")),
-    geom_pointrange(
-        aes(y = "play_time_mean",
-            ymin = "play_time_lower",
-            ymax = "play_time_upper"),
-    ),
-    scale_x_discrete(breaks=list(range(1,8)), labels = ISO_weekday_order),
-    scale_color_manual(
-        values = {"Tango": accents["Tango"], "Queens": accents["Queens"]}
-    ),
-    scale_fill_manual(
-        values = {"Tango": accents["Tango"], "Queens": accents["Queens"]}
-    ),
+    aes(x = "avg_time", group = "weekday", color = "weekday"),
+    geom_density(alpha = 0),
+    facet_grid(x= "game")
 )
 ```
-
 
 ## Time degradation of the average
 
