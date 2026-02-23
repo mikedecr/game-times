@@ -5,10 +5,12 @@ import typer
 from ollama import ChatResponse, chat
 from tqdm import tqdm
 
+from .app import app
+
 MODEL = "glm-ocr"
 
 
-app = typer.Typer(name="ocr", invoke_without_command=False)
+__all__ = []
 
 
 def llm_read_text(image_path: Path) -> ChatResponse:
@@ -54,7 +56,3 @@ def ocr(
         json = response.model_dump_json(indent=2)
         Path(write_dir / "response.json").write_text(json)
         print(f"processed {file}")
-
-
-if __name__ == "__main__":
-    app()
